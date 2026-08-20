@@ -1,0 +1,260 @@
+name: Publish qualified baseline images
+
+on:
+  push:
+    branches: [main, rocm-7.2]
+    paths:
+      - "docker/**"
+      - "requirements.txt"
+      - "environment.yml"
+      - "scripts/smoke/**"
+      - "scripts/qualification/**"
+      - ".github/workflows/publish-images.yml"
+  pull_request:
+    branches: [main, rocm-7.2]
+    paths:
+      - "docker/**"
+      - "requirements.txt"
+      - "environment.yml"
+      - "scripts/smoke/**"
+      - "scripts/qualification/**"
+      - ".github/workflows/publish-images.yml"
+  schedule:
+    - cron: "23 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: splatam-baseline-images-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  ROCM_VERSION: "7.2.4"
+  AMD_PORT_AUDIT_SHA256: c77e18af1ccaecd3d0803be300b6c7091fe847d3db72a181fc03f2613c9498b5
+
+jobs:
+  build-rocm:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [gfx1201, gfx1151, gfx90a]
+    steps:
+      - name: Check out portability branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'schedule' && 'rocm-7.2' || github.ref }}
+      - name: Resolve checked-out source SHA
+        id: source
+        shell: bash
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and publish immutable ROCm candidate
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile.rocm
+          push: true
+          tags: ghcr.io/${{ github.repository_owner }}/splatam-rocm:sha-${{ steps.source.outputs.sha }}-${{ matrix.arch }}
+          build-args: |
+            ROCM_ARCH=${{ matrix.arch }}
+          cache-from: type=gha,scope=splatam-rocm-${{ matrix.arch }}
+          cache-to: type=gha,scope=splatam-rocm-${{ matrix.arch }},mode=max
+      - name: Record candidate digest
+        run: |
+          mkdir -p qualification
+          printf '%s\n' '${{ steps.build.outputs.digest }}' > qualification/rocm-${{ matrix.arch }}.digest
+      - uses: actions/upload-artifact@v4
+        with:
+          name: splatam-rocm-candidate-${{ matrix.arch }}
+          path: qualification/rocm-${{ matrix.arch }}.digest
+
+  build-cuda:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out portability branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'schedule' && 'rocm-7.2' || github.ref }}
+      - name: Resolve checked-out source SHA
+        id: source
+        shell: bash
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and publish immutable CUDA candidate
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile.cuda
+          push: true
+          tags: ghcr.io/${{ github.repository_owner }}/splatam-cuda:sha-${{ steps.source.outputs.sha }}
+          cache-from: type=gha,scope=splatam-cuda
+          cache-to: type=gha,scope=splatam-cuda,mode=max
+      - name: Record candidate digest
+        run: |
+          mkdir -p qualification
+          printf '%s\n' '${{ steps.build.outputs.digest }}' > qualification/cuda.digest
+      - uses: actions/upload-artifact@v4
+        with:
+          name: splatam-cuda-candidate
+          path: qualification/cuda.digest
+
+  pr-build:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - backend: rocm
+            dockerfile: docker/Dockerfile.rocm
+            arch: gfx1201
+          - backend: cuda
+            dockerfile: docker/Dockerfile.cuda
+            arch: ""
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build without publishing
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          push: false
+          build-args: |
+            ROCM_ARCH=${{ matrix.arch }}
+          cache-from: type=gha,scope=splatam-${{ matrix.backend }}-${{ matrix.arch }}
+
+  qualify-rocm:
+    needs: build-rocm
+    if: github.event_name != 'pull_request'
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [gfx1201, gfx1151, gfx90a]
+    # Configure runners with labels: self-hosted, linux, rocm, <gfx arch>.
+    runs-on: [self-hosted, linux, rocm, "${{ matrix.arch }}"]
+    steps:
+      - name: Check out exact source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'schedule' && 'rocm-7.2' || github.ref }}
+      - name: Resolve checked-out source SHA
+        id: source
+        shell: bash
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Pull immutable candidate and resolve digest
+        id: image
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="ghcr.io/${GITHUB_REPOSITORY_OWNER}/splatam-rocm:sha-${{ steps.source.outputs.sha }}-${{ matrix.arch }}"
+          docker pull "$tag"
+          digest_ref="$(docker inspect --format='{{index .RepoDigests 0}}' "$tag")"
+          digest="${digest_ref##*@}"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "digest_ref=$digest_ref" >> "$GITHUB_OUTPUT"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+      - name: Real AMD GPU rasterizer smoke
+        run: |
+          docker run --rm \
+            --device=/dev/kfd --device=/dev/dri \
+            --group-add video --ipc=host --shm-size=16G \
+            "${{ steps.image.outputs.digest_ref }}" \
+            python /opt/smoke/rasterizer.py
+      - name: Write qualification manifest
+        run: |
+          python scripts/qualification/write_manifest.py \
+            --backend rocm \
+            --image "${{ steps.image.outputs.tag }}" \
+            --digest "${{ steps.image.outputs.digest }}" \
+            --gpu-arch "${{ matrix.arch }}" \
+            --status qualified \
+            --amd-port-audit-sha256 "${AMD_PORT_AUDIT_SHA256}" \
+            --base-image-digest "sha256:9c9592175fece788d6c0b86059012f49b568dc95c98c13879dfdf89c30342559" \
+            --output container-qualification.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: splatam-rocm-qualified-${{ matrix.arch }}
+          path: container-qualification.json
+      - name: Promote last-known-good convenience tag
+        run: |
+          docker buildx imagetools create \
+            --tag "ghcr.io/${GITHUB_REPOSITORY_OWNER}/splatam-rocm:rocm-${ROCM_VERSION}-${{ matrix.arch }}" \
+            "${{ steps.image.outputs.digest_ref }}"
+
+  qualify-cuda:
+    needs: build-cuda
+    if: github.event_name != 'pull_request'
+    runs-on: [self-hosted, linux, cuda]
+    steps:
+      - name: Check out exact source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'schedule' && 'rocm-7.2' || github.ref }}
+      - name: Resolve checked-out source SHA
+        id: source
+        shell: bash
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Pull immutable candidate and resolve digest
+        id: image
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="ghcr.io/${GITHUB_REPOSITORY_OWNER}/splatam-cuda:sha-${{ steps.source.outputs.sha }}"
+          docker pull "$tag"
+          digest_ref="$(docker inspect --format='{{index .RepoDigests 0}}' "$tag")"
+          digest="${digest_ref##*@}"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "digest_ref=$digest_ref" >> "$GITHUB_OUTPUT"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+      - name: Real NVIDIA GPU rasterizer smoke
+        run: |
+          docker run --rm --gpus=all --ipc=host --shm-size=16G \
+            "${{ steps.image.outputs.digest_ref }}" \
+            python /opt/smoke/rasterizer.py
+      - name: Write qualification manifest
+        run: |
+          python scripts/qualification/write_manifest.py \
+            --backend cuda \
+            --image "${{ steps.image.outputs.tag }}" \
+            --digest "${{ steps.image.outputs.digest }}" \
+            --status qualified \
+            --base-image-digest "sha256:72d9b042337ea385b36d40638e8cbe1968f098773be49493ccef8b95f069711d" \
+            --output container-qualification.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: splatam-cuda-qualified
+          path: container-qualification.json
+      - name: Promote last-known-good convenience tag
+        run: |
+          docker buildx imagetools create \
+            --tag "ghcr.io/${GITHUB_REPOSITORY_OWNER}/splatam-cuda:author" \
+            "${{ steps.image.outputs.digest_ref }}"
