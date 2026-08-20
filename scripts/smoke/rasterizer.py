@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""Tiny forward/backward smoke for the pinned SplaTAM depth rasterizer."""
+"""Tiny dependency and forward/backward smoke for the SplaTAM image."""
 from __future__ import annotations
 
 import os
 
+import numpy as np
+import open3d as o3d
 import torch
 from diff_gaussian_rasterization import GaussianRasterizationSettings, GaussianRasterizer
 
@@ -14,6 +16,12 @@ if expected == "rocm":
     assert torch.version.hip, "ROCm image must expose torch.version.hip"
 else:
     assert torch.version.hip is None, "CUDA author image unexpectedly reports a HIP runtime"
+
+# The audited SplaTAM stack uses legacy Open3D 0.16. It is CPU-side in this
+# controlled mapper image, but must remain importable alongside the modern ROCm
+# PyTorch stack. Open3D <=0.18 requires NumPy <2.
+assert o3d.__version__.startswith("0.16."), o3d.__version__
+assert int(np.__version__.split(".", 1)[0]) < 2, np.__version__
 
 device = torch.device("cuda:0")  # PyTorch intentionally uses cuda:* for ROCm too.
 bg = torch.zeros(3, device=device)
@@ -60,6 +68,12 @@ for name, tensor in {
     assert tensor.grad is not None, f"missing gradient for {name}"
     assert torch.isfinite(tensor.grad).all(), f"non-finite gradient for {name}"
 print(
-    "rasterizer smoke passed",
-    {"backend": expected, "hip": torch.version.hip, "device": torch.cuda.get_device_name(0)},
+    "splatam smoke passed",
+    {
+        "backend": expected,
+        "hip": torch.version.hip,
+        "device": torch.cuda.get_device_name(0),
+        "open3d": o3d.__version__,
+        "numpy": np.__version__,
+    },
 )
