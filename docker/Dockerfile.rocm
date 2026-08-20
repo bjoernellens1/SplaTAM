@@ -36,6 +36,10 @@ COPY . /workspace/SplaTAM
 RUN test "$(git rev-parse HEAD 2>/dev/null || true)" = "${SPLATAM_UPSTREAM_SHA}" \
       || echo "NOTE: build context is a portability fork; upstream identity is checked by ResearchFlow provenance"
 
+# Open3D <=0.18 is not compatible with NumPy >=2. Keep the legacy Open3D 0.16
+# author dependency while fixing NumPy to a deterministic compatible version.
+RUN python -m pip install 'numpy==1.26.4'
+
 # Install the author requirements except the CUDA-only rasterizer line, which is
 # already installed from its exact SHA above. Open3D 0.16 remains CPU/legacy here;
 # SplaTAM does not require the Open3D Tensor GPU path for the controlled mapper.
@@ -50,6 +54,7 @@ LABEL org.opencontainers.image.source="https://github.com/spla-tam/SplaTAM" \
       researchflow.depth_rasterizer.sha="${DEPTH_RASTERIZER_SHA}" \
       researchflow.backend="rocm" \
       researchflow.rocm="7.2.4" \
+      researchflow.numpy.portability="1.26.4" \
       researchflow.amd_moat.sha="${AMD_MOAT_SHA}" \
       researchflow.amd_gaussian_splatting_reference.sha="${AMD_GAUSSIAN_SPLATTING_ROCM_SHA}"
 
