@@ -1,6 +1,6 @@
 tqdm==4.65.0
 Pillow
-opencv-python
+opencv-python<4.9
 imageio
 matplotlib
 kornia==0.6.8
