@@ -1,0 +1,56 @@
+# Controlled/stress ROCm image. Paper reproduction remains CUDA-canonical until
+# cross-backend equivalence has been qualified.
+ARG ROCM_PYTORCH_IMAGE=rocm/pytorch:rocm7.2.4_ubuntu22.04_py3.10_pytorch_release_2.9.1@sha256:9c9592175fece788d6c0b86059012f49b568dc95c98c13879dfdf89c30342559
+FROM ${ROCM_PYTORCH_IMAGE}
+
+ARG SPLATAM_UPSTREAM_SHA=da6bbcd24c248dc884ac7f49d62e91b841b26ccc
+ARG DEPTH_RASTERIZER_SHA=cb65e4b86bc3bd8ed42174b72a62e8d3a3a71110
+ARG ROCM_ARCH=gfx1201
+ARG AMD_MOAT_SHA=f69bb67d70e7a47af00095dab7029c230a30be73
+ARG AMD_GAUSSIAN_SPLATTING_ROCM_SHA=dfb1dd1cbcc508e08c7395b27953620121dad1fc
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    ROCM_HOME=/opt/rocm \
+    CUDA_HOME=/opt/rocm \
+    PYTORCH_ROCM_ARCH=${ROCM_ARCH} \
+    TORCH_CUDA_ARCH_LIST="" \
+    PIP_NO_CACHE_DIR=1 \
+    EXPECT_BACKEND=rocm
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      build-essential git ninja-build cmake pkg-config \
+      libgl1 libglib2.0-0 libsm6 libxext6 libxrender1 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /opt
+RUN git clone https://github.com/JonathonLuiten/diff-gaussian-rasterization-w-depth.git depth-rasterizer \
+    && git -C depth-rasterizer checkout --detach ${DEPTH_RASTERIZER_SHA} \
+    && test "$(git -C depth-rasterizer rev-parse HEAD)" = "${DEPTH_RASTERIZER_SHA}"
+COPY docker/patches/rocm-depth-rasterizer.py /tmp/rocm-depth-rasterizer.py
+RUN cd /opt/depth-rasterizer \
+    && python /tmp/rocm-depth-rasterizer.py \
+    && python -m pip install --no-build-isolation .
+
+WORKDIR /workspace/SplaTAM
+COPY . /workspace/SplaTAM
+RUN test "$(git rev-parse HEAD 2>/dev/null || true)" = "${SPLATAM_UPSTREAM_SHA}" \
+      || echo "NOTE: build context is a portability fork; upstream identity is checked by ResearchFlow provenance"
+
+# Install the author requirements except the CUDA-only rasterizer line, which is
+# already installed from its exact SHA above. Open3D 0.16 remains CPU/legacy here;
+# SplaTAM does not require the Open3D Tensor GPU path for the controlled mapper.
+RUN grep -v 'diff-gaussian-rasterization-w-depth' requirements.txt > /tmp/requirements.txt \
+    && python -m pip install -r /tmp/requirements.txt
+
+COPY scripts/smoke/rasterizer.py /opt/smoke/rasterizer.py
+
+LABEL org.opencontainers.image.source="https://github.com/spla-tam/SplaTAM" \
+      researchflow.method="splatam" \
+      researchflow.upstream.sha="${SPLATAM_UPSTREAM_SHA}" \
+      researchflow.depth_rasterizer.sha="${DEPTH_RASTERIZER_SHA}" \
+      researchflow.backend="rocm" \
+      researchflow.rocm="7.2.4" \
+      researchflow.amd_moat.sha="${AMD_MOAT_SHA}" \
+      researchflow.amd_gaussian_splatting_reference.sha="${AMD_GAUSSIAN_SPLATTING_ROCM_SHA}"
+
+CMD ["python", "/opt/smoke/rasterizer.py"]
