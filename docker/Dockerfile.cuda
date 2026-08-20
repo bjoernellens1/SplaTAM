@@ -5,6 +5,7 @@ ARG SPLATAM_UPSTREAM_SHA=da6bbcd24c248dc884ac7f49d62e91b841b26ccc
 ARG DEPTH_RASTERIZER_SHA=cb65e4b86bc3bd8ed42174b72a62e8d3a3a71110
 ARG MINIFORGE_VERSION=23.3.1-1
 ENV DEBIAN_FRONTEND=noninteractive PIP_NO_CACHE_DIR=1 EXPECT_BACKEND=cuda
+ENV TORCH_CUDA_ARCH_LIST="7.0;7.5;8.0;8.6+PTX" CUDA_HOME=/usr/local/cuda
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
       build-essential git wget ca-certificates libgl1 libglib2.0-0 libsm6 libxext6 libxrender1 \
@@ -13,7 +14,7 @@ RUN wget -q https://github.com/conda-forge/miniforge/releases/download/${MINIFOR
     && bash /tmp/miniforge.sh -b -p /opt/conda \
     && rm /tmp/miniforge.sh
 ENV PATH=/opt/conda/bin:${PATH}
-RUN conda create -y -n splatam python=3.10 pip \
+RUN conda create -y -n splatam python=3.10 pip 'setuptools<70' \
     && conda clean -afy
 ENV PATH=/opt/conda/envs/splatam/bin:/opt/conda/bin:${PATH}
 RUN python -m pip install \
@@ -27,12 +28,8 @@ RUN git clone https://github.com/JonathonLuiten/diff-gaussian-rasterization-w-de
 
 WORKDIR /workspace/SplaTAM
 COPY . /workspace/SplaTAM
-# Open3D 0.16 requires NumPy <2. Pin the same deterministic compatibility
-# version used by the ROCm portability image so dependency drift does not make
-# the author/reference image unreproducible.
-RUN python -m pip install 'numpy==1.26.4' \
-    && grep -v 'diff-gaussian-rasterization-w-depth' requirements.txt > /tmp/requirements.txt \
-    && python -m pip install -r /tmp/requirements.txt
+RUN python -m pip install -r requirements.txt \
+    && python -m pip install 'numpy==1.26.4' 'setuptools<70'
 COPY scripts/smoke/rasterizer.py /opt/smoke/rasterizer.py
 
 LABEL researchflow.method="splatam" \
