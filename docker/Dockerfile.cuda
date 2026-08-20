@@ -27,7 +27,11 @@ RUN git clone https://github.com/JonathonLuiten/diff-gaussian-rasterization-w-de
 
 WORKDIR /workspace/SplaTAM
 COPY . /workspace/SplaTAM
-RUN grep -v 'diff-gaussian-rasterization-w-depth' requirements.txt > /tmp/requirements.txt \
+# Open3D 0.16 requires NumPy <2. Pin the same deterministic compatibility
+# version used by the ROCm portability image so dependency drift does not make
+# the author/reference image unreproducible.
+RUN python -m pip install 'numpy==1.26.4' \
+    && grep -v 'diff-gaussian-rasterization-w-depth' requirements.txt > /tmp/requirements.txt \
     && python -m pip install -r /tmp/requirements.txt
 COPY scripts/smoke/rasterizer.py /opt/smoke/rasterizer.py
 
@@ -36,5 +40,6 @@ LABEL researchflow.method="splatam" \
       researchflow.depth_rasterizer.sha="${DEPTH_RASTERIZER_SHA}" \
       researchflow.backend="cuda" \
       researchflow.cuda="11.6" \
-      researchflow.torch="1.12.1+cu116"
+      researchflow.torch="1.12.1+cu116" \
+      researchflow.numpy.portability="1.26.4"
 CMD ["python", "/opt/smoke/rasterizer.py"]
