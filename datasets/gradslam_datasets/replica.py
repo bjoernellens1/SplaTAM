@@ -42,8 +42,8 @@ class ReplicaDataset(GradSLAMDataset):
         )
 
     def get_filepaths(self):
-        color_paths = natsorted(glob.glob(f"{self.input_folder}/results/frame*.jpg"))
-        depth_paths = natsorted(glob.glob(f"{self.input_folder}/results/depth*.png"))
+        color_paths = natsorted(glob.glob(f"{self.input_folder}/results/frame*.jpg") + glob.glob(f"{self.input_folder}/images/frame*.jpg"))
+        depth_paths = natsorted(glob.glob(f"{self.input_folder}/results/depth*.png") + glob.glob(f"{self.input_folder}/depth_images/depth*.png"))
         embedding_paths = None
         if self.load_embeddings:
             embedding_paths = natsorted(glob.glob(f"{self.input_folder}/{self.embedding_dir}/*.pt"))
