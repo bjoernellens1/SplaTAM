@@ -1,0 +1,44 @@
+# Author/reference CUDA image for paper reproduction.
+FROM nvidia/cuda:11.6.2-cudnn8-devel-ubuntu20.04@sha256:72d9b042337ea385b36d40638e8cbe1968f098773be49493ccef8b95f069711d
+
+ARG SPLATAM_UPSTREAM_SHA=da6bbcd24c248dc884ac7f49d62e91b841b26ccc
+ARG DEPTH_RASTERIZER_SHA=cb65e4b86bc3bd8ed42174b72a62e8d3a3a71110
+ARG MINIFORGE_VERSION=23.3.1-1
+ENV DEBIAN_FRONTEND=noninteractive PIP_NO_CACHE_DIR=1 EXPECT_BACKEND=cuda
+ENV TORCH_CUDA_ARCH_LIST="7.0;7.5;8.0;8.6+PTX" CUDA_HOME=/usr/local/cuda
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      build-essential git wget ca-certificates libgl1 libglib2.0-0 libsm6 libxext6 libxrender1 \
+    && rm -rf /var/lib/apt/lists/*
+RUN wget -q https://github.com/conda-forge/miniforge/releases/download/${MINIFORGE_VERSION}/Miniforge3-${MINIFORGE_VERSION}-Linux-x86_64.sh -O /tmp/miniforge.sh \
+    && bash /tmp/miniforge.sh -b -p /opt/conda \
+    && rm /tmp/miniforge.sh
+ENV PATH=/opt/conda/bin:${PATH}
+RUN conda create -y -n splatam python=3.10 pip 'setuptools<70' \
+    && conda clean -afy
+ENV PATH=/opt/conda/envs/splatam/bin:/opt/conda/bin:${PATH}
+
+WORKDIR /workspace/SplaTAM
+COPY . /workspace/SplaTAM
+
+RUN python -m pip install \
+      torch==1.12.1+cu116 torchvision==0.13.1+cu116 torchaudio==0.12.1 \
+      --extra-index-url https://download.pytorch.org/whl/cu116 \
+    && python -m pip install -r requirements.txt \
+    && python -m pip install 'numpy==1.26.4' 'setuptools<70'
+
+WORKDIR /opt
+RUN git clone https://github.com/JonathonLuiten/diff-gaussian-rasterization-w-depth.git depth-rasterizer \
+    && git -C depth-rasterizer checkout --detach ${DEPTH_RASTERIZER_SHA} \
+    && python -m pip install --no-build-isolation /opt/depth-rasterizer
+
+COPY scripts/smoke/rasterizer.py /opt/smoke/rasterizer.py
+
+LABEL researchflow.method="splatam" \
+      researchflow.upstream.sha="${SPLATAM_UPSTREAM_SHA}" \
+      researchflow.depth_rasterizer.sha="${DEPTH_RASTERIZER_SHA}" \
+      researchflow.backend="cuda" \
+      researchflow.cuda="11.6" \
+      researchflow.torch="1.12.1+cu116" \
+      researchflow.numpy.portability="1.26.4"
+CMD ["python", "/opt/smoke/rasterizer.py"]
